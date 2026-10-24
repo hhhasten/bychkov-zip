@@ -42,7 +42,6 @@ pub fn is_incompressible(data: &[u8]) -> bool {
     shannon_entropy(data) >= INCOMPRESSIBLE_THRESHOLD
 }
 
-
 // юніт тести
 #[cfg(test)]
 mod tests {
@@ -88,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn  cyrillic_text_is_compressible() {
+    fn cyrillic_text_is_compressible() {
         let text = "вован золєвський привєт я говорящий тест вітаю тебе з хелоувіном. ".repeat(228);
         let h = shannon_entropy(text.as_bytes());
         assert!(h > 3.0 && h < 5.0, "h = {h}");
