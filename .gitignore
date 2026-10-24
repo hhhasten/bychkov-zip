@@ -14,3 +14,8 @@ gui/.vs/
 Thumbs.db
 *.tmp
 *.byz
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
