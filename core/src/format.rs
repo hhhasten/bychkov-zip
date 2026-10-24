@@ -24,7 +24,7 @@ pub const FORMAT_VERSION: u8 = 1;
 pub const SALT_LEN: usize = 16;
 pub const NONCE_LEN: usize = 12;
 
-// офсети полів в заголовці
+// офсети полів в хедері
 // виписані константами щоб уникнути незрозумілих чисел в коді і не налажать
 const VERSION_POS: usize = MAGIC.len(); // 4
 const SALT_START: usize = VERSION_POS + 1; // 5
@@ -62,7 +62,7 @@ impl Header {
         out
     }
 
-    /// читає заголовок з початку `data`.
+    /// читає хедер з початку `data`.
     /// все що йде після перших 33 байт ігнорується, бо його зріже код який викликає цей метод
     pub fn from_bytes(data: &[u8]) -> Result<Header> {
         if data.len() < HEADER_LEN {
