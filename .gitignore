@@ -1,0 +1,16 @@
+# --- Rust ---
+core/target/
+**/*.rs.bk
+
+# --- C# / .NET ---
+gui/**/bin/
+gui/**/obj/
+gui/.vs/
+*.user
+*.suo
+
+# --- OS & Temporary Files ---
+.DS_Store
+Thumbs.db
+*.tmp
+*.byz
