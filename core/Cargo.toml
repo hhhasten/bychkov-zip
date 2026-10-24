@@ -1,0 +1,17 @@
+[package]
+name = "bychkov-zip"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aes-gcm = "0.11.1"
+anyhow = "1.0.104"
+argon2 = "0.6.0"
+clap = { version = "4.6.7", features = ["derive"] }
+rand = "0.10.3"
+thiserror = "2.0.21"
+zeroize = "1.9.1"
+
+[dev-dependencies]
+criterion = "0.8.2"
+tempfile = "3.27.0"
