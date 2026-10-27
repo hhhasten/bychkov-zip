@@ -10,5 +10,6 @@ mod bitio;
 mod canonical;
 mod lengths;
 
+pub use bitio::{BitReader, BitWriter};
 pub use canonical::{Code, MAX_CODE_LEN, canonical_codes};
 pub use lengths::{ALPHABET_SIZE, code_lengths, count_frequencies};
