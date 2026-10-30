@@ -5,3 +5,5 @@ pub mod format;
 
 pub mod crypto;
 pub mod huffman;
+
+pub mod archiver;
