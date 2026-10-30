@@ -1,40 +1,53 @@
-//! оркестратор: збирає архів .byz з файлів (а пізніше і розбирає назад)
+//! оркестратор: збирає архів .byz з файлів і розбирає його назад
 //!
-//! сам нічого не рахує, лише викликає інші модулі в потрібному порядку:
+//! сам нічого не рахує, лише викликає інші модулі в потрібному порядку.
+//! упаковка:
 //!   файли -> entropy -> huffman -> format (метадані) -> crypto -> запис .byz
+//! розпаковка:
+//!   читання .byz -> crypto -> format -> перевірка шляхів -> huffman -> запис файлів
 //!
 //! про прогрес архіватор нічого не друкує: він викликає функцію `on_event`,
 //! яку йому передали. що з цими подіями робити (вивести в stdout, показати
 //! в тестах) вирішує той, хто викликає
 //!
 
-use crate::crypto::{derive_key, encrypt, random_nonce, random_salt};
+use crate::crypto::{decrypt, derive_key, encrypt, random_nonce, random_salt};
 use crate::entropy::is_incompressible;
 use crate::error::{ByzError, Result};
 use crate::format::{FileEntry, HEADER_LEN, Header, Metadata};
 use crate::huffman;
 use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub const MAX_INPUT_BYTES: u64 = 500 * 1024 * 1024;
 
+// найбільший архів який ми читаємо: ліміт на вміст плюс запас
+// на заголовок, тег і метадані (імена файлів)
+pub const MAX_ARCHIVE_BYTES: u64 = MAX_INPUT_BYTES + 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
+    // упаковка
     Analyzing,
     Compressing,
     Encrypting,
+    // розпаковка
+    Decrypting,
+    Extracting,
     Complete,
 }
 
 impl Stage {
-    /// текст для рядка `status:текст` з контракту cli
+    /// текст для рядка `byz-status:текст` з контракту cli (префікс додає сам cli)
     pub fn as_str(self) -> &'static str {
         match self {
             Stage::Analyzing => "analyzing",
             Stage::Compressing => "compressing",
             Stage::Encrypting => "encrypting",
+            Stage::Decrypting => "decrypting",
+            Stage::Extracting => "extracting",
             Stage::Complete => "complete",
         }
     }
@@ -52,6 +65,11 @@ pub enum Event {
 // шифрування і запис це по одному великому кроку тому їх ми окремо не міряємо
 const COMPRESS_PROGRESS_END: u8 = 90;
 const ENCRYPT_PROGRESS_END: u8 = 95;
+
+// розпаковка: розшифрування це один крок (0..10), далі розпаковка файлів за байтами (10..90),
+// останні відсотки це запис файлів на диск
+const DECRYPT_PROGRESS_END: u8 = 10;
+const EXTRACT_PROGRESS_END: u8 = 90;
 
 struct Input {
     path: PathBuf,
@@ -101,7 +119,12 @@ pub fn create_archive(
         entries.push(entry);
         blobs.extend_from_slice(&blob);
 
-        on_event(Event::Progress(percent(processed_bytes, total_bytes)));
+        on_event(Event::Progress(scaled_percent(
+            processed_bytes,
+            total_bytes,
+            0,
+            COMPRESS_PROGRESS_END,
+        )));
     }
 
     on_event(Event::Status(Stage::Encrypting));
@@ -109,19 +132,9 @@ pub fn create_archive(
     let mut plaintext = Metadata { files: entries }.to_bytes()?;
     plaintext.extend_from_slice(&blobs);
 
-    let salt = random_salt()?;
-    let nonce = random_nonce()?;
-    let header = Header::new(salt, nonce);
-    let header_bytes = header.to_bytes();
-
-    let key = derive_key(password, &salt, header.version)?;
-
-    let ciphertext = encrypt(&plaintext, &key, &nonce, &header_bytes)?;
+    let archive = seal(&plaintext, password)?;
     on_event(Event::Progress(ENCRYPT_PROGRESS_END));
 
-    let mut archive = Vec::with_capacity(HEADER_LEN + ciphertext.len());
-    archive.extend_from_slice(&header_bytes);
-    archive.extend_from_slice(&ciphertext);
     write_file(output, &archive)?;
 
     on_event(Event::Progress(100));
@@ -130,13 +143,276 @@ pub fn create_archive(
     Ok(())
 }
 
-/// відсотки в межах етапу стиснення (0..=COMPRESS_PROGRESS_END)
-fn percent(processed: u64, total: u64) -> u8 {
+/// відсотки в межах етапу: від `start` до `end` пропорційно до опрацьованих байтів
+fn scaled_percent(processed: u64, total: u64, start: u8, end: u8) -> u8 {
     if total == 0 {
-        return COMPRESS_PROGRESS_END;
+        return end;
     }
-    // u64 вистачає: processed не більше 500 МБ, множимо на 90
-    (processed * COMPRESS_PROGRESS_END as u64 / total) as u8
+    let span = (end - start) as u64;
+    // u64 вистачає: processed не більше ~500 МБ, множимо щонайбільше на 100
+    start + (processed * span / total) as u8
+}
+
+/// шифрує відкритий текст і повертає готові байти архіву: заголовок + шифротекст
+fn seal(plaintext: &[u8], password: &[u8]) -> Result<Vec<u8>> {
+    let salt = random_salt()?;
+    let nonce = random_nonce()?;
+    let header = Header::new(salt, nonce);
+    let header_bytes = header.to_bytes();
+
+    let key = derive_key(password, &salt, header.version)?;
+    // відкритий заголовок іде як AAD: підмінити його не вийде
+    let ciphertext = encrypt(plaintext, &key, &nonce, &header_bytes)?;
+
+    let mut archive = Vec::with_capacity(HEADER_LEN + ciphertext.len());
+    archive.extend_from_slice(&header_bytes);
+    archive.extend_from_slice(&ciphertext);
+
+    Ok(archive)
+}
+
+/// зворотній бік `seal`: перевіряє заголовок, виводить ключ і розшифровує.
+/// неправильний пароль чи зіпсований файл це `AuthFailed`
+fn open_sealed(archive: &[u8], password: &[u8]) -> Result<Vec<u8>> {
+    let header = Header::from_bytes(archive)?;
+    // довжину вже перевірив from_bytes, тож split_at не панікує
+    let (header_bytes, ciphertext) = archive.split_at(HEADER_LEN);
+
+    let key = derive_key(password, &header.salt, header.version)?;
+    decrypt(ciphertext, &key, &header.nonce, header_bytes)
+}
+
+/// розпаковує архів `archive_path` у папку `output_dir`.
+///
+/// порядок важливий: спочатку розшифрування і перевірка всього (метадані, розміри,
+/// шляхи, дублі), потім розпаковка в пам'ять, і лише після цього перший запис на диск.
+/// тому неправильний пароль, зіпсований архів чи небезпечний шлях не залишають
+/// на диску нічого
+pub fn extract_archive(
+    archive_path: &Path,
+    output_dir: &Path,
+    password: &[u8],
+    on_event: &mut dyn FnMut(Event),
+) -> Result<()> {
+    if password.is_empty() {
+        return Err(ByzError::BadArgs("password must not be empty".into()));
+    }
+
+    on_event(Event::Status(Stage::Decrypting));
+    on_event(Event::Progress(0));
+
+    // розмір дивимось до читання, щоб гігантський файл не з'їв пам'ять
+    let size = fs::metadata(archive_path)
+        .map_err(|e| io_error_with_path(e, archive_path))?
+        .len();
+    if size > MAX_ARCHIVE_BYTES {
+        return Err(ByzError::TooLarge {
+            size,
+            limit: MAX_ARCHIVE_BYTES,
+        });
+    }
+    let archive = fs::read(archive_path).map_err(|e| io_error_with_path(e, archive_path))?;
+
+    let plaintext = open_sealed(&archive, password)?;
+    drop(archive);
+
+    let (meta, meta_len) = Metadata::from_bytes(&plaintext)?;
+    let blobs = &plaintext[meta_len..];
+
+    // блоки мають займати рівно стільки, скільки сказано в метаданих
+    if meta.total_stored_len() != Some(blobs.len() as u64) {
+        return Err(ByzError::BadFormat(
+            "file data size does not match the metadata".into(),
+        ));
+    }
+
+    // захист від "бомби": розпаковане не може перевищувати ліміт, з яким архіви створюються
+    let total_original = meta
+        .files
+        .iter()
+        .fold(0u64, |sum, file| sum.saturating_add(file.original_len));
+    if total_original > MAX_INPUT_BYTES {
+        return Err(ByzError::TooLarge {
+            size: total_original,
+            limit: MAX_INPUT_BYTES,
+        });
+    }
+
+    // усі шляхи перевіряються до того, як щось записано на диск
+    let relative_paths = validate_entries(&meta)?;
+
+    on_event(Event::Progress(DECRYPT_PROGRESS_END));
+    on_event(Event::Status(Stage::Extracting));
+
+    // розпаковуємо все в пам'ять: якщо якийсь блок зіпсований, дізнаємось про це
+    // до запису першого файлу
+    let total_stored = blobs.len() as u64;
+    let mut restored: Vec<Vec<u8>> = Vec::with_capacity(meta.files.len());
+    let mut offset: usize = 0;
+    let mut processed: u64 = 0;
+
+    for entry in &meta.files {
+        let stored_len = usize::try_from(entry.stored_len)
+            .map_err(|_| ByzError::BadFormat("file block is too large".into()))?;
+        let blob = offset
+            .checked_add(stored_len)
+            .and_then(|end| blobs.get(offset..end))
+            .ok_or_else(|| ByzError::BadFormat("file block is out of range".into()))?;
+        offset += stored_len;
+
+        let content = if entry.is_compressed() {
+            huffman::decompress(blob, entry.original_len)?
+        } else {
+            blob.to_vec()
+        };
+        restored.push(content);
+
+        processed += entry.stored_len;
+        on_event(Event::Progress(scaled_percent(
+            processed,
+            total_stored,
+            DECRYPT_PROGRESS_END,
+            EXTRACT_PROGRESS_END,
+        )));
+    }
+
+    write_files(output_dir, &relative_paths, &restored)?;
+
+    on_event(Event::Progress(100));
+    on_event(Event::Status(Stage::Complete));
+
+    Ok(())
+}
+
+/// перевіряє шляхи всіх записів і повертає їх у вигляді відносних `PathBuf`.
+/// заодно відсікає дублі: два записи з одним шляхом перезаписали б один одного
+fn validate_entries(meta: &Metadata) -> Result<Vec<PathBuf>> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut paths = Vec::with_capacity(meta.files.len());
+
+    for entry in &meta.files {
+        let relative = validate_archive_path(&entry.path)?;
+
+        // порівнюємо без урахування регістру: на Windows і macOS "A.txt" і "a.txt" це один файл
+        if !seen.insert(entry.path.to_lowercase()) {
+            return Err(ByzError::BadFormat(format!(
+                "archive contains the same path twice: {:?}",
+                entry.path
+            )));
+        }
+        paths.push(relative);
+    }
+
+    Ok(paths)
+}
+
+/// перевіряє один шлях з архіву (Zip Slip) і перетворює на відносний `PathBuf`.
+///
+/// перевірка лексична, тобто за самим текстом шляху, без звернення до диска:
+/// файлів на диску ще немає, тож `canonicalize` тут не працював би.
+/// в архіві роздільник завжди `/`, тому ділимо рядок самі, а не через `Path`
+fn validate_archive_path(path: &str) -> Result<PathBuf> {
+    let unsafe_path = |reason: &str| ByzError::UnsafePath(format!("{path:?} ({reason})"));
+
+    if path.is_empty() {
+        return Err(unsafe_path("empty path"));
+    }
+    if path.starts_with('/') {
+        return Err(unsafe_path("absolute path"));
+    }
+
+    let mut relative = PathBuf::new();
+    for part in path.split('/') {
+        if part.is_empty() {
+            return Err(unsafe_path("empty path component"));
+        }
+        if part == "." || part == ".." {
+            return Err(unsafe_path("'.' or '..' component"));
+        }
+        // '\' і ':' на Windows означають роздільник і диск ("C:\x"),
+        // керуючі символи (включно з нульовим байтом) в іменах файлів не потрібні
+        if part.contains(['\\', ':']) || part.chars().any(|c| c.is_control()) {
+            return Err(unsafe_path("forbidden character"));
+        }
+        // Windows відкидає кінцеві крапки і пробіли, тож "a.txt." і "a.txt" це один файл
+        if part.ends_with('.') || part.ends_with(' ') {
+            return Err(unsafe_path("name ends with a dot or a space"));
+        }
+        if is_windows_reserved_name(part) {
+            return Err(unsafe_path("reserved device name"));
+        }
+        relative.push(part);
+    }
+
+    Ok(relative)
+}
+
+/// імена пристроїв Windows (CON, NUL, COM1...), з розширенням чи без: файл з таким
+/// іменем не створюється, а звертається до пристрою
+fn is_windows_reserved_name(part: &str) -> bool {
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
+
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+
+    let bytes = stem.as_bytes();
+    bytes.len() == 4
+        && (stem.starts_with("COM") || stem.starts_with("LPT"))
+        && matches!(bytes[3], b'1'..=b'9')
+}
+
+/// записує розпаковані файли в `output_dir`
+fn write_files(output_dir: &Path, relative_paths: &[PathBuf], contents: &[Vec<u8>]) -> Result<()> {
+    fs::create_dir_all(output_dir).map_err(|e| io_error_with_path(e, output_dir))?;
+    // канонічний шлях: усі символічні посилання розкриті, з ним порівнюємо кожну ціль
+    let root = fs::canonicalize(output_dir).map_err(|e| io_error_with_path(e, output_dir))?;
+
+    // спочатку перевіряємо що жоден файл не існує, щоб не перезаписати чуже
+    // і не писати половину файлів, якщо третій вже зайнятий
+    let targets: Vec<PathBuf> = relative_paths.iter().map(|rel| root.join(rel)).collect();
+    for target in &targets {
+        if fs::symlink_metadata(target).is_ok() {
+            return Err(ByzError::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} already exists", target.display()),
+            )));
+        }
+    }
+
+    for (target, content) in targets.iter().zip(contents) {
+        let parent = target
+            .parent()
+            .expect("target is inside root, so it always has a parent");
+        fs::create_dir_all(parent).map_err(|e| io_error_with_path(e, parent))?;
+
+        // друга лінія захисту: якщо проміжна папка виявилась символічним посиланням
+        // назовні, справжній шлях батька вийде за межі root
+        let real_parent = fs::canonicalize(parent).map_err(|e| io_error_with_path(e, parent))?;
+        if !real_parent.starts_with(&root) {
+            return Err(ByzError::UnsafePath(format!(
+                "{:?} (resolves outside of the output folder)",
+                target
+            )));
+        }
+
+        // create_new відмовляється відкривати файл що вже існує
+        // (і не йде за символічним посиланням)
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)
+            .map_err(|e| io_error_with_path(e, target))?;
+        file.write_all(content)
+            .map_err(|e| io_error_with_path(e, target))?;
+    }
+
+    Ok(())
 }
 
 /// перевіряє вхідні шляхи і збирає про них все потрібне.
@@ -543,10 +819,398 @@ mod tests {
 
     #[test]
     fn percent_is_proportional_to_processed_bytes() {
-        assert_eq!(percent(0, 100), 0);
-        assert_eq!(percent(50, 100), 45);
-        assert_eq!(percent(100, 100), COMPRESS_PROGRESS_END);
-        // нема що обробляти: стиснення вважаємо завершеним
-        assert_eq!(percent(0, 0), COMPRESS_PROGRESS_END);
+        assert_eq!(scaled_percent(0, 100, 0, 90), 0);
+        assert_eq!(scaled_percent(50, 100, 0, 90), 45);
+        assert_eq!(scaled_percent(100, 100, 0, 90), 90);
+        // розпаковка: діапазон 10..90
+        assert_eq!(scaled_percent(0, 100, 10, 90), 10);
+        assert_eq!(scaled_percent(50, 100, 10, 90), 50);
+        assert_eq!(scaled_percent(100, 100, 10, 90), 90);
+        // нема що обробляти: етап вважаємо завершеним
+        assert_eq!(scaled_percent(0, 0, 0, 90), 90);
+    }
+
+    // розпаковка
+
+    /// розпаковує архів у `out` і повертає результат разом з подіями
+    fn extract(archive: &Path, out: &Path, password: &[u8]) -> (Result<()>, Vec<Event>) {
+        let mut events = Vec::new();
+        let result = extract_archive(archive, out, password, &mut |e| events.push(e));
+        (result, events)
+    }
+
+    /// збирає справжній зашифрований архів з довільними записами (навіть небезпечними),
+    /// так, як це міг би зробити зловмисник який знає пароль
+    fn forge_archive(path: &Path, files: &[(&str, &[u8])]) {
+        let entries = files
+            .iter()
+            .map(|(name, data)| {
+                FileEntry::new(
+                    name.to_string(),
+                    data.len() as u64,
+                    data.len() as u64,
+                    false,
+                )
+            })
+            .collect();
+        let mut plaintext = Metadata { files: entries }.to_bytes().unwrap();
+        for (_, data) in files {
+            plaintext.extend_from_slice(data);
+        }
+        fs::write(path, seal(&plaintext, PASSWORD).unwrap()).unwrap();
+    }
+
+    /// те саме, але з готових метаданих і блоків (для зіпсованих варіантів)
+    fn forge_raw(path: &Path, metadata: Metadata, blobs: &[u8]) {
+        let mut plaintext = metadata.to_bytes().unwrap();
+        plaintext.extend_from_slice(blobs);
+        fs::write(path, seal(&plaintext, PASSWORD).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn create_then_extract_restores_every_file() {
+        let dir = TempDir::new().unwrap();
+        let text = text_bytes();
+        let random = random_bytes(8_000);
+        let inputs = vec![
+            make_file(&dir, "notes.txt", &text),
+            make_file(&dir, "photo.jpg", &random),
+            make_file(&dir, "tiny.txt", b"hi"),
+            make_file(&dir, "empty.txt", b""),
+        ];
+        let archive = dir.path().join("all.byz");
+        create_archive(&inputs, &archive, PASSWORD, &mut |_| {}).unwrap();
+
+        let out = dir.path().join("restored");
+        let (result, _) = extract(&archive, &out, PASSWORD);
+        result.unwrap();
+
+        assert_eq!(fs::read(out.join("notes.txt")).unwrap(), text);
+        assert_eq!(fs::read(out.join("photo.jpg")).unwrap(), random);
+        assert_eq!(fs::read(out.join("tiny.txt")).unwrap(), b"hi");
+        assert_eq!(fs::read(out.join("empty.txt")).unwrap(), b"");
+    }
+
+    #[test]
+    fn extract_events_arrive_in_order() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        create_archive(
+            &[make_file(&dir, "a.txt", &text_bytes())],
+            &archive,
+            PASSWORD,
+            &mut |_| {},
+        )
+        .unwrap();
+
+        let (result, events) = extract(&archive, &dir.path().join("out"), PASSWORD);
+        result.unwrap();
+
+        let statuses: Vec<Stage> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Status(stage) => Some(*stage),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![Stage::Decrypting, Stage::Extracting, Stage::Complete]
+        );
+
+        let progress: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Progress(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        assert!(progress.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(progress.first(), Some(&0));
+        assert_eq!(progress.last(), Some(&100));
+    }
+
+    #[test]
+    fn wrong_password_writes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        create_archive(
+            &[make_file(&dir, "a.txt", b"secret")],
+            &archive,
+            PASSWORD,
+            &mut |_| {},
+        )
+        .unwrap();
+
+        let out = dir.path().join("out");
+        let (result, _) = extract(&archive, &out, b"wrong password");
+        assert!(matches!(result.unwrap_err(), ByzError::AuthFailed));
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn extract_rejects_empty_password() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        create_archive(
+            &[make_file(&dir, "a.txt", b"x")],
+            &archive,
+            PASSWORD,
+            &mut |_| {},
+        )
+        .unwrap();
+
+        let (result, _) = extract(&archive, &dir.path().join("out"), b"");
+        assert!(matches!(result.unwrap_err(), ByzError::BadArgs(_)));
+    }
+
+    #[test]
+    fn tampered_archive_is_rejected_and_writes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        create_archive(
+            &[make_file(&dir, "a.txt", &text_bytes())],
+            &archive,
+            PASSWORD,
+            &mut |_| {},
+        )
+        .unwrap();
+        let original = fs::read(&archive).unwrap();
+
+        // змінюємо по одному байту: у nonce (відкритий заголовок), у шифротексті, у тезі
+        for position in [20, HEADER_LEN + 3, original.len() - 1] {
+            let mut tampered = original.clone();
+            tampered[position] ^= 1;
+            fs::write(&archive, &tampered).unwrap();
+
+            let out = dir.path().join(format!("out{position}"));
+            let (result, _) = extract(&archive, &out, PASSWORD);
+            assert!(
+                matches!(result.unwrap_err(), ByzError::AuthFailed),
+                "position = {position}"
+            );
+            assert!(!out.exists());
+        }
+    }
+
+    #[test]
+    fn truncated_and_foreign_files_are_rejected() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        create_archive(
+            &[make_file(&dir, "a.txt", &text_bytes())],
+            &archive,
+            PASSWORD,
+            &mut |_| {},
+        )
+        .unwrap();
+        let original = fs::read(&archive).unwrap();
+
+        // обрізаний посередині: тег не сходиться
+        fs::write(&archive, &original[..original.len() / 2]).unwrap();
+        let (result, _) = extract(&archive, &dir.path().join("o1"), PASSWORD);
+        assert!(matches!(result.unwrap_err(), ByzError::AuthFailed));
+
+        // коротший за заголовок
+        fs::write(&archive, &original[..10]).unwrap();
+        let (result, _) = extract(&archive, &dir.path().join("o2"), PASSWORD);
+        assert!(matches!(result.unwrap_err(), ByzError::BadFormat(_)));
+
+        // взагалі не .byz
+        fs::write(&archive, random_bytes(500)).unwrap();
+        let (result, _) = extract(&archive, &dir.path().join("o3"), PASSWORD);
+        assert!(matches!(result.unwrap_err(), ByzError::BadFormat(_)));
+
+        // файлу немає
+        let (result, _) = extract(
+            &dir.path().join("nope.byz"),
+            &dir.path().join("o4"),
+            PASSWORD,
+        );
+        assert!(matches!(result.unwrap_err(), ByzError::Io(_)));
+    }
+
+    #[test]
+    fn zip_slip_entries_are_rejected_and_nothing_is_written() {
+        let bad_paths = [
+            "../evil.txt",
+            "a/../../evil.txt",
+            "/etc/evil.txt",
+            "C:\\evil.txt",
+            "C:evil.txt",
+            "..\\evil.txt",
+            "a//b.txt",
+            "./a.txt",
+            "",
+            "dir/",
+            "CON",
+            "nul.txt",
+            "name.",
+            "name ",
+            "bad\0name.txt",
+        ];
+
+        for bad in bad_paths {
+            let dir = TempDir::new().unwrap();
+            let archive = dir.path().join("evil.byz");
+            // перший запис нормальний: він теж не має потрапити на диск
+            forge_archive(&archive, &[("good.txt", b"good"), (bad, b"evil")]);
+
+            let out = dir.path().join("out");
+            let (result, _) = extract(&archive, &out, PASSWORD);
+            assert!(
+                matches!(result, Err(ByzError::UnsafePath(_))),
+                "path {bad:?} was not rejected: {result:?}"
+            );
+            assert!(!out.exists(), "path {bad:?}: output folder was created");
+            assert!(!dir.path().join("evil.txt").exists());
+        }
+    }
+
+    #[test]
+    fn path_validation_accepts_normal_names() {
+        for good in [
+            "a.txt",
+            "dir/a.txt",
+            "папка/файл.txt",
+            "console.txt",
+            "a.b.c",
+            "COM10.txt",
+        ] {
+            assert!(validate_archive_path(good).is_ok(), "{good}");
+        }
+        assert_eq!(
+            validate_archive_path("dir/sub/a.txt").unwrap(),
+            PathBuf::from("dir").join("sub").join("a.txt")
+        );
+    }
+
+    #[test]
+    fn windows_device_names_are_rejected() {
+        for bad in [
+            "CON", "con", "Con.txt", "PRN", "AUX.log", "NUL", "COM1", "com9.txt", "LPT3",
+        ] {
+            assert!(validate_archive_path(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn subfolders_from_archive_are_created() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        forge_archive(&archive, &[("docs/inner/readme.txt", b"hello")]);
+
+        let out = dir.path().join("out");
+        extract(&archive, &out, PASSWORD).0.unwrap();
+        assert_eq!(
+            fs::read(out.join("docs").join("inner").join("readme.txt")).unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn existing_files_are_never_overwritten() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        forge_archive(
+            &archive,
+            &[("new.txt", b"new"), ("taken.txt", b"from archive")],
+        );
+
+        let out = dir.path().join("out");
+        fs::create_dir(&out).unwrap();
+        fs::write(out.join("taken.txt"), b"mine").unwrap();
+
+        let (result, _) = extract(&archive, &out, PASSWORD);
+        assert!(matches!(result.unwrap_err(), ByzError::Io(_)));
+        // чужий файл цілий, і new.txt теж не записаний
+        assert_eq!(fs::read(out.join("taken.txt")).unwrap(), b"mine");
+        assert!(!out.join("new.txt").exists());
+    }
+
+    #[test]
+    fn duplicate_paths_in_archive_are_rejected() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        forge_archive(&archive, &[("a.txt", b"1"), ("A.TXT", b"2")]);
+
+        let out = dir.path().join("out");
+        let (result, _) = extract(&archive, &out, PASSWORD);
+        assert!(matches!(result.unwrap_err(), ByzError::BadFormat(_)));
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn blocks_size_must_match_metadata() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        let meta = Metadata {
+            files: vec![FileEntry::new("a.txt".into(), 10, 10, false)],
+        };
+        // у метаданих 10 байт, у блоках 5
+        forge_raw(&archive, meta, b"short");
+
+        let (result, _) = extract(&archive, &dir.path().join("out"), PASSWORD);
+        assert!(matches!(result.unwrap_err(), ByzError::BadFormat(_)));
+    }
+
+    #[test]
+    fn declared_size_above_limit_is_rejected_before_unpacking() {
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        // стиснений запис що обіцяє розпакуватися в більше ніж дозволено
+        let meta = Metadata {
+            files: vec![FileEntry::new(
+                "bomb.bin".into(),
+                MAX_INPUT_BYTES + 1,
+                0,
+                true,
+            )],
+        };
+        forge_raw(&archive, meta, b"");
+
+        let out = dir.path().join("out");
+        let (result, _) = extract(&archive, &out, PASSWORD);
+        assert!(matches!(result.unwrap_err(), ByzError::TooLarge { .. }));
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn corrupted_compressed_block_writes_nothing() {
+        // правильна автентифікація, але всередині сміття замість Хаффмана:
+        // помилка має виникнути до запису першого файлу
+        let dir = TempDir::new().unwrap();
+        let archive = dir.path().join("a.byz");
+        let meta = Metadata {
+            files: vec![
+                FileEntry::new("first.txt".into(), 5, 5, false),
+                FileEntry::new("second.txt".into(), 100, 10, true),
+            ],
+        };
+        forge_raw(&archive, meta, b"helloGARBAGE!!");
+
+        let out = dir.path().join("out");
+        let (result, _) = extract(&archive, &out, PASSWORD);
+        assert!(matches!(result.unwrap_err(), ByzError::BadFormat(_)));
+        assert!(!out.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_inside_output_cannot_redirect_writes_outside() {
+        let dir = TempDir::new().unwrap();
+        let outside = dir.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+
+        let out = dir.path().join("out");
+        fs::create_dir(&out).unwrap();
+        std::os::unix::fs::symlink(&outside, out.join("link")).unwrap();
+
+        let archive = dir.path().join("a.byz");
+        forge_archive(&archive, &[("link/stolen.txt", b"data")]);
+
+        let (result, _) = extract(&archive, &out, PASSWORD);
+        assert!(matches!(result, Err(ByzError::UnsafePath(_))), "{result:?}");
+        assert!(!outside.join("stolen.txt").exists());
     }
 }
