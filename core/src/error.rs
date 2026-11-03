@@ -55,6 +55,13 @@ impl ByzError {
 /// аліас щоб писати Result<T> а не Result<T, ByzError>.
 pub type Result<T> = std::result::Result<T, ByzError>;
 
+pub(crate) fn io_error_with_path(error: std::io::Error, path: &std::path::Path) -> ByzError {
+    ByzError::Io(std::io::Error::new(
+        error.kind(),
+        format!("{}: {error}", path.display()),
+    ))
+}
+
 // юніт тести
 #[cfg(test)]
 mod tests {

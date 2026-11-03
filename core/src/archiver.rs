@@ -13,9 +13,10 @@
 
 use crate::crypto::{decrypt, derive_key, encrypt, random_nonce, random_salt};
 use crate::entropy::is_incompressible;
-use crate::error::{ByzError, Result};
+use crate::error::{ByzError, Result, io_error_with_path};
 use crate::format::{FileEntry, HEADER_LEN, Header, Metadata};
 use crate::huffman;
+use crate::input::collect_inputs;
 use crate::path::validate_archive_path;
 use std::collections::HashSet;
 use std::fs;
@@ -72,13 +73,7 @@ const ENCRYPT_PROGRESS_END: u8 = 95;
 const DECRYPT_PROGRESS_END: u8 = 10;
 const EXTRACT_PROGRESS_END: u8 = 90;
 
-struct Input {
-    path: PathBuf,
-    archive_path: String,
-    size: u64,
-}
-
-/// створює архів `output` з файлів `inputs`, захищений паролем.
+/// створює архів `output` з файлів і папок `inputs`, захищений паролем.
 ///
 /// `on_event` отримує статуси і прогрес. прогрес під час стиснення рахується
 /// за реально опрацьованими байтами
@@ -353,67 +348,6 @@ fn write_files(output_dir: &Path, relative_paths: &[PathBuf], contents: &[Vec<u8
     Ok(())
 }
 
-/// перевіряє вхідні шляхи і збирає про них все потрібне.
-/// `limit` це ліміт сумарного розміру
-fn collect_inputs(paths: &[PathBuf], limit: u64) -> Result<Vec<Input>> {
-    if paths.is_empty() {
-        return Err(ByzError::BadArgs("no input files".into()));
-    }
-
-    let mut files = Vec::with_capacity(paths.len());
-    let mut seen_names: HashSet<String> = HashSet::new();
-    let mut total: u64 = 0;
-
-    for path in paths {
-        let meta = fs::metadata(path).map_err(|e| io_error_with_path(e, path))?;
-
-        if meta.is_dir() {
-            return Err(ByzError::BadArgs(format!(
-                "{} is a folder, only files are supported",
-                path.display()
-            )));
-        }
-        if !meta.is_file() {
-            return Err(ByzError::BadArgs(format!(
-                "{} is not a regular file",
-                path.display()
-            )));
-        }
-
-        let archive_path = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| {
-                ByzError::BadArgs(format!(
-                    "file name of {} is not valid utf-8",
-                    path.display()
-                ))
-            })?
-            .to_owned();
-
-        // у архіві зберігаються лише імена, тож два файли з однаковим іменем
-        // з різних папок при розпакуванні перезаписали б один одного
-        if !seen_names.insert(archive_path.clone()) {
-            return Err(ByzError::BadArgs(format!(
-                "two input files have the same name: {archive_path}"
-            )));
-        }
-
-        total = total.saturating_add(meta.len());
-        if total > limit {
-            return Err(ByzError::TooLarge { size: total, limit });
-        }
-
-        files.push(Input {
-            path: path.clone(),
-            archive_path,
-            size: meta.len(),
-        });
-    }
-
-    Ok(files)
-}
-
 /// вирішує як зберегти один файл: стиснутим чи як є.
 /// повертає запис для метаданих і блок байтів для архіву
 fn pack_file(archive_path: String, data: Vec<u8>) -> Result<(FileEntry, Vec<u8>)> {
@@ -433,14 +367,6 @@ fn pack_file(archive_path: String, data: Vec<u8>) -> Result<(FileEntry, Vec<u8>)
 
     let entry = FileEntry::new(archive_path, original_len, original_len, false);
     Ok((entry, data))
-}
-
-/// додає до помилки вводу-виводу шлях, інакше з "file not found" незрозуміло якого саме
-fn io_error_with_path(error: io::Error, path: &Path) -> ByzError {
-    ByzError::Io(io::Error::new(
-        error.kind(),
-        format!("{}: {error}", path.display()),
-    ))
 }
 
 /// пише файл через тимчасовий: якщо щось піде не так посередині,
@@ -698,16 +624,6 @@ mod tests {
         assert!(matches!(err, ByzError::Io(_)));
         assert!(err.to_string().contains("nope.txt"));
         assert!(!output.exists());
-    }
-
-    #[test]
-    fn folder_input_is_rejected() {
-        let dir = TempDir::new().unwrap();
-        let output = dir.path().join("out.byz");
-
-        let err = create_archive(&[dir.path().to_path_buf()], &output, PASSWORD, &mut |_| {})
-            .unwrap_err();
-        assert!(matches!(err, ByzError::BadArgs(_)));
     }
 
     #[test]
