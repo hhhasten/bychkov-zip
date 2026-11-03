@@ -16,6 +16,7 @@ use crate::entropy::is_incompressible;
 use crate::error::{ByzError, Result};
 use crate::format::{FileEntry, HEADER_LEN, Header, Metadata};
 use crate::huffman;
+use crate::path::validate_archive_path;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
@@ -284,8 +285,7 @@ pub fn extract_archive(
     Ok(())
 }
 
-/// перевіряє шляхи всіх записів і повертає їх у вигляді відносних `PathBuf`.
-/// заодно відсікає дублі: два записи з одним шляхом перезаписали б один одного
+/// Validates all paths and rejects duplicates (case-insensitive).
 fn validate_entries(meta: &Metadata) -> Result<Vec<PathBuf>> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut paths = Vec::with_capacity(meta.files.len());
@@ -293,7 +293,6 @@ fn validate_entries(meta: &Metadata) -> Result<Vec<PathBuf>> {
     for entry in &meta.files {
         let relative = validate_archive_path(&entry.path)?;
 
-        // порівнюємо без урахування регістру: на Windows і macOS "A.txt" і "a.txt" це один файл
         if !seen.insert(entry.path.to_lowercase()) {
             return Err(ByzError::BadFormat(format!(
                 "archive contains the same path twice: {:?}",
@@ -304,67 +303,6 @@ fn validate_entries(meta: &Metadata) -> Result<Vec<PathBuf>> {
     }
 
     Ok(paths)
-}
-
-/// перевіряє один шлях з архіву (Zip Slip) і перетворює на відносний `PathBuf`.
-///
-/// перевірка лексична, тобто за самим текстом шляху, без звернення до диска:
-/// файлів на диску ще немає, тож `canonicalize` тут не працював би.
-/// в архіві роздільник завжди `/`, тому ділимо рядок самі, а не через `Path`
-fn validate_archive_path(path: &str) -> Result<PathBuf> {
-    let unsafe_path = |reason: &str| ByzError::UnsafePath(format!("{path:?} ({reason})"));
-
-    if path.is_empty() {
-        return Err(unsafe_path("empty path"));
-    }
-    if path.starts_with('/') {
-        return Err(unsafe_path("absolute path"));
-    }
-
-    let mut relative = PathBuf::new();
-    for part in path.split('/') {
-        if part.is_empty() {
-            return Err(unsafe_path("empty path component"));
-        }
-        if part == "." || part == ".." {
-            return Err(unsafe_path("'.' or '..' component"));
-        }
-        // '\' і ':' на Windows означають роздільник і диск ("C:\x"),
-        // керуючі символи (включно з нульовим байтом) в іменах файлів не потрібні
-        if part.contains(['\\', ':']) || part.chars().any(|c| c.is_control()) {
-            return Err(unsafe_path("forbidden character"));
-        }
-        // Windows відкидає кінцеві крапки і пробіли, тож "a.txt." і "a.txt" це один файл
-        if part.ends_with('.') || part.ends_with(' ') {
-            return Err(unsafe_path("name ends with a dot or a space"));
-        }
-        if is_windows_reserved_name(part) {
-            return Err(unsafe_path("reserved device name"));
-        }
-        relative.push(part);
-    }
-
-    Ok(relative)
-}
-
-/// імена пристроїв Windows (CON, NUL, COM1...), з розширенням чи без: файл з таким
-/// іменем не створюється, а звертається до пристрою
-fn is_windows_reserved_name(part: &str) -> bool {
-    let stem = part
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .trim_end()
-        .to_ascii_uppercase();
-
-    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
-        return true;
-    }
-
-    let bytes = stem.as_bytes();
-    bytes.len() == 4
-        && (stem.starts_with("COM") || stem.starts_with("LPT"))
-        && matches!(bytes[3], b'1'..=b'9')
 }
 
 /// записує розпаковані файли в `output_dir`
