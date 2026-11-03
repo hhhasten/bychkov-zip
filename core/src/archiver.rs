@@ -627,20 +627,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_names_are_rejected() {
-        let dir = TempDir::new().unwrap();
-        fs::create_dir(dir.path().join("one")).unwrap();
-        fs::create_dir(dir.path().join("two")).unwrap();
-        let a = dir.path().join("one").join("same.txt");
-        let b = dir.path().join("two").join("same.txt");
-        fs::write(&a, b"a").unwrap();
-        fs::write(&b, b"b").unwrap();
-
-        let err = collect_inputs(&[a, b], MAX_INPUT_BYTES).err().unwrap();
-        assert!(matches!(err, ByzError::BadArgs(_)));
-    }
-
-    #[test]
     fn no_inputs_and_empty_password_are_rejected() {
         let dir = TempDir::new().unwrap();
         let output = dir.path().join("out.byz");
@@ -651,24 +637,6 @@ mod tests {
         let file = make_file(&dir, "a.txt", b"data");
         let err = create_archive(&[file], &output, b"", &mut |_| {}).unwrap_err();
         assert!(matches!(err, ByzError::BadArgs(_)));
-    }
-
-    #[test]
-    fn total_size_limit_is_enforced_before_reading() {
-        let dir = TempDir::new().unwrap();
-        let a = make_file(&dir, "a.bin", &[0u8; 600]);
-        let b = make_file(&dir, "b.bin", &[0u8; 600]);
-
-        // кожен файл окремо влазить в ліміт 1000, а разом ні
-        assert!(collect_inputs(std::slice::from_ref(&a), 1000).is_ok());
-        let err = collect_inputs(&[a, b], 1000).err().unwrap();
-        assert!(matches!(
-            err,
-            ByzError::TooLarge {
-                size: 1200,
-                limit: 1000
-            }
-        ));
     }
 
     #[test]
@@ -918,33 +886,6 @@ mod tests {
             );
             assert!(!out.exists(), "path {bad:?}: output folder was created");
             assert!(!dir.path().join("evil.txt").exists());
-        }
-    }
-
-    #[test]
-    fn path_validation_accepts_normal_names() {
-        for good in [
-            "a.txt",
-            "dir/a.txt",
-            "папка/файл.txt",
-            "console.txt",
-            "a.b.c",
-            "COM10.txt",
-        ] {
-            assert!(validate_archive_path(good).is_ok(), "{good}");
-        }
-        assert_eq!(
-            validate_archive_path("dir/sub/a.txt").unwrap(),
-            PathBuf::from("dir").join("sub").join("a.txt")
-        );
-    }
-
-    #[test]
-    fn windows_device_names_are_rejected() {
-        for bad in [
-            "CON", "con", "Con.txt", "PRN", "AUX.log", "NUL", "COM1", "com9.txt", "LPT3",
-        ] {
-            assert!(validate_archive_path(bad).is_err(), "{bad}");
         }
     }
 

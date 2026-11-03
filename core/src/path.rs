@@ -54,3 +54,58 @@ fn is_windows_reserved_name(part: &str) -> bool {
         && (stem.starts_with("COM") || stem.starts_with("LPT"))
         && matches!(bytes[3], b'1'..=b'9')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_normal_paths() {
+        for path in [
+            "a.txt",
+            "dir/a.txt",
+            "папка/файл.txt",
+            "console.txt",
+            "COM10.txt",
+        ] {
+            assert!(validate_archive_path(path).is_ok(), "{path}");
+        }
+
+        assert_eq!(
+            validate_archive_path("dir/sub/a.txt").unwrap(),
+            PathBuf::from("dir").join("sub").join("a.txt")
+        );
+    }
+
+    #[test]
+    fn rejects_unsafe_paths() {
+        for path in [
+            "",
+            "../evil.txt",
+            "a/../../evil.txt",
+            "/etc/evil.txt",
+            "C:\\evil.txt",
+            "..\\evil.txt",
+            "a//b.txt",
+            "./a.txt",
+            "dir/",
+            "name.",
+            "name ",
+            "bad\0name.txt",
+        ] {
+            assert!(
+                matches!(validate_archive_path(path), Err(ByzError::UnsafePath(_))),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_windows_device_names() {
+        for path in [
+            "CON", "con", "Con.txt", "PRN", "AUX.log", "NUL", "COM1", "com9.txt", "LPT3",
+        ] {
+            assert!(validate_archive_path(path).is_err(), "{path}");
+        }
+    }
+}

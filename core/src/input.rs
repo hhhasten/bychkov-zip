@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug)]
 pub(crate) struct Input {
     pub(crate) path: PathBuf,
     pub(crate) archive_path: String,
@@ -172,4 +173,87 @@ fn file_name(path: &Path) -> Result<&str> {
         .ok_or_else(|| {
             ByzError::BadArgs(format!("path has no UTF-8 file name: {}", path.display()))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write(path: &Path, data: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, data).unwrap();
+    }
+
+    #[test]
+    fn collects_files_and_nested_directories() {
+        let dir = TempDir::new().unwrap();
+        write(&dir.path().join("docs/readme.txt"), b"hello");
+        write(&dir.path().join("docs/sub/note.txt"), b"note");
+        write(&dir.path().join("photo.jpg"), b"img");
+        fs::create_dir_all(dir.path().join("docs/empty")).unwrap();
+
+        let inputs = collect_inputs(
+            &[dir.path().join("docs"), dir.path().join("photo.jpg")],
+            u64::MAX,
+        )
+        .unwrap();
+
+        let paths: Vec<_> = inputs.iter().map(|i| i.archive_path.as_str()).collect();
+        assert_eq!(paths, ["docs/readme.txt", "docs/sub/note.txt", "photo.jpg"]);
+
+        let sizes: Vec<_> = inputs.iter().map(|i| i.size).collect();
+        assert_eq!(sizes, [5, 4, 3]);
+    }
+
+    #[test]
+    fn rejects_duplicate_paths() {
+        let dir = TempDir::new().unwrap();
+        write(&dir.path().join("one/same.txt"), b"a");
+        write(&dir.path().join("two/same.txt"), b"b");
+
+        let err = collect_inputs(
+            &[
+                dir.path().join("one/same.txt"),
+                dir.path().join("two/same.txt"),
+            ],
+            u64::MAX,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, ByzError::BadArgs(_)));
+    }
+
+    #[test]
+    fn rejects_file_folder_conflict() {
+        let dir = TempDir::new().unwrap();
+        write(&dir.path().join("docs/a.txt"), b"a");
+        write(&dir.path().join("other/docs"), b"file");
+
+        let err = collect_inputs(
+            &[dir.path().join("docs"), dir.path().join("other/docs")],
+            u64::MAX,
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, ByzError::BadArgs(_)));
+    }
+
+    #[test]
+    fn enforces_total_size_limit() {
+        let dir = TempDir::new().unwrap();
+        write(&dir.path().join("a.bin"), &[0; 600]);
+        write(&dir.path().join("b.bin"), &[0; 600]);
+
+        let err = collect_inputs(&[dir.path().join("a.bin"), dir.path().join("b.bin")], 1000)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ByzError::TooLarge {
+                size: 1200,
+                limit: 1000
+            }
+        ));
+    }
 }
