@@ -4,7 +4,6 @@ use bychkov_zip::error::{ByzError, Result};
 use std::io::{self, BufRead, IsTerminal, Write};
 use zeroize::Zeroizing;
 
-#[allow(dead_code)]
 pub fn read(confirm: bool) -> Result<Zeroizing<Vec<u8>>> {
     if io::stdin().is_terminal() {
         let password = terminal("Password: ")?;

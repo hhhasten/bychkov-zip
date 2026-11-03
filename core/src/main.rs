@@ -1,6 +1,13 @@
 mod cli;
 
 fn main() {
-    let args = cli::args::parse();
-    drop(args);
+    let code = match cli::commands::run(cli::args::parse().command) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("{error}");
+            error.exit_code()
+        }
+    };
+
+    std::process::exit(code);
 }
