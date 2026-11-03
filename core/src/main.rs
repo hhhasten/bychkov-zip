@@ -1,3 +1,6 @@
+mod cli;
+
 fn main() {
-    println!("Hello, world!");
+    let args = cli::args::parse();
+    drop(args);
 }
