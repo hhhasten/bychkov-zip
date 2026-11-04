@@ -3,3 +3,4 @@
 pub mod args;
 pub mod commands;
 pub mod password;
+pub mod reporter;

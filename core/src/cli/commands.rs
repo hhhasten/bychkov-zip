@@ -2,8 +2,10 @@
 
 use super::args::Command;
 use super::password;
+use super::reporter::Reporter;
 use bychkov_zip::archiver::{create_archive, extract_archive};
 use bychkov_zip::error::{ByzError, Result};
+use std::io;
 use std::path::{Path, PathBuf};
 
 pub fn run(command: Command) -> Result<()> {
@@ -26,16 +28,20 @@ fn create(output: &Path, inputs: &[PathBuf], force: bool) -> Result<()> {
     }
 
     let password = password::read(true)?;
-    create_archive(inputs, output, &password, &mut |_| {})
+    let mut reporter = Reporter::new(io::stdout());
+    create_archive(inputs, output, &password, &mut |event| {
+        reporter.event(event)
+    })
 }
 
 fn extract(archive: &Path, output: Option<&Path>) -> Result<()> {
     let password = password::read(false)?;
+    let mut reporter = Reporter::new(io::stdout());
     extract_archive(
         archive,
         output.unwrap_or(Path::new(".")),
         &password,
-        &mut |_| {},
+        &mut |event| reporter.event(event),
     )
 }
 
