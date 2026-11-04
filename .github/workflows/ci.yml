@@ -24,4 +24,17 @@ jobs:
 
       - run: cargo fmt --all -- --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --all-targets
+      - name: Run tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --all-targets 2>&1 | tee cargo-test.log
+
+      - name: Annotate test failures
+        if: failure()
+        shell: bash
+        run: |
+          test -f cargo-test.log || exit 0
+          grep -E "^(test result:|failures:|[[:space:]]+[a-zA-Z0-9_:]+$|---- .* stdout ----|thread .* panicked|assertion)" cargo-test.log \
+            | head -30 \
+            | while IFS= read -r line; do echo "::error title=test failure::$line"; done
