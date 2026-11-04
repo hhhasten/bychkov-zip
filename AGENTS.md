@@ -10,8 +10,9 @@ The repository owner gives the agent two files — `AGENTS.md` and `TASKS.md` �
 plus a task ID. Ready-to-use prompt:
 
 > Read `AGENTS.md` and `TASKS.md` in the repository root. Complete task
-> **T-01**. Work on a separate branch. Follow the contract literally. Finish
-> with a report using the template from `AGENTS.md`.
+> **T-01**. Work on a separate branch. Follow the contract literally. Push the
+> branch and open a pull request into `main`, but do not merge it. Finish with a
+> report using the template from `AGENTS.md`.
 
 If the agent cannot open the files or run `cargo`, it must say so immediately
 and **must not invent** test results.
@@ -35,12 +36,15 @@ of inventing a contract.
 
 Roles:
 
-- **maintainer** — the repository owner. May change anything.
-- **task agent** — you. You change only the files allowed by your task.
+- **maintainer** — the repository owner. May change anything. Only the
+  maintainer reviews and merges pull requests into `main`.
+- **task agent** — you. You change only the files allowed by your task, push
+  only your own task branch, and open a pull request. You never merge it.
 
 ## 2. Commands
 
-Run everything from the `core/` directory:
+Run everything from the `core/` directory. The crate uses Rust 2024 edition, so
+a toolchain of 1.85 or newer is required (`rustup update stable`).
 
 ```sh
 cargo fmt --all
@@ -88,9 +92,12 @@ A task agent **must not**:
 5. Change or disable existing tests just to make them pass.
 6. Delete, rename, or "optimise" other people's modules.
 7. Add CLI commands, flags, or `stdout`/`stderr` output.
-8. Run `git push`, `git merge`, `git rebase`, `git reset --hard`, or
-   `git push --force`. Creating a branch and committing is allowed; pushing is
-   not.
+8. Commit to or push to `main`, merge or rebase anything into `main`, reset a
+   shared branch (including `main`) with `git reset --hard`, merge a pull
+   request, or force-push a branch that is not yours. Pushing **your own task
+   branch** is allowed: `git push -u origin task/T-01-lz77`. After rebasing your
+   own branch you may update it with `git push --force-with-lease`; never use
+   plain `--force` and never force-push `main`.
 9. Commit `target/`, `*.byz`, passwords, keys, temporary files, or any material
    belonging to the course instructor.
 10. Use `unsafe` unless the task explicitly requires it.
@@ -112,15 +119,17 @@ pub mod <module_name>;
 Nothing else in `lib.rs` may change: not the order, not existing lines, not
 comments.
 
-If several tasks add lines in the same place, that is fine: a one-line merge
-conflict is resolved by the maintainer.
+If another task is merged before yours, `core/src/lib.rs` may conflict. Rebase
+your branch on the latest `main` and keep both `pub mod` lines: one per task.
+Do not delete someone else's line.
 
 ## 6. Workflow
 
-1. Make sure you are on a clean `main`:
-   `git status`, `git log --oneline -3`.
-2. Create a branch:
-   `git switch -c task/T-01-lz77` (ID and short name come from the task).
+1. Get the latest `main` and make sure the working tree is clean:
+   `git fetch origin`, `git status`, `git log --oneline -3 origin/main`.
+2. Create a branch from `origin/main`:
+   `git switch -c task/T-01-lz77 origin/main` (ID and short name come from the
+   task).
 3. Read the whole task and `docs/FORMAT.md` if the task deals with data.
 4. Write the tests first, inside your module (`#[cfg(test)] mod tests`).
 5. Implement the code.
@@ -130,7 +139,15 @@ conflict is resolved by the maintainer.
    - `test(<module>): ...`
    - `feat(<module>): ...`
    - `fix(<module>): ...`
-8. Send a report using the template in section 10.
+8. Push your branch: `git push -u origin task/T-01-lz77`.
+9. Open a pull request from your branch into `main`, request a review from the
+   maintainer and wait for GitHub CI (`CI / check`) to pass. Do not merge the
+   pull request yourself.
+10. Send a report using the template in section 10.
+
+If `main` moves while you work, rebase only your own branch:
+`git fetch origin`, `git rebase origin/main`, then
+`git push --force-with-lease`.
 
 Commits should be atomic: tests separately from implementation when that makes
 sense. Do not mix unrelated topics in one commit.
@@ -142,9 +159,10 @@ A task is done only when:
 - [ ] the public API matches the contract in `TASKS.md` (names, types, errors);
 - [ ] every test listed in the task is present;
 - [ ] error paths and edge cases are covered;
-- [ ] `cargo fmt --all` changes nothing;
+- [ ] `cargo fmt --all` changes nothing (`cargo fmt --all -- --check` is clean);
 - [ ] `cargo test --all-targets` passes, including the old tests;
 - [ ] `cargo clippy --all-targets -- -D warnings` is clean;
+- [ ] GitHub CI (`CI / check`) is green on the pull request;
 - [ ] only allowed files were changed;
 - [ ] exactly one line was added to `lib.rs`;
 - [ ] public functions do not `unwrap()`, `expect()`, or panic on input;
@@ -158,7 +176,9 @@ Stop immediately and ask a question if:
 - a new dependency is needed;
 - a forbidden file has to be changed;
 - an existing test fails for reasons unrelated to your code;
-- the task requires integration with `format.rs`, `archiver/**`, or `cli/**`;
+- the task requires integration with `format.rs`, `archiver/**`, `cli/**`, or
+  `huffman/**`;
+- a merge conflict touches a file you are not allowed to change;
 - it is unclear how to handle an error and the contract does not say;
 - `cargo` is unavailable or the build fails for environment reasons.
 
@@ -195,6 +215,7 @@ Finish with exactly this report:
 ```text
 Task: T-01
 Branch: task/T-01-lz77
+Pull request: <url>
 Commits: <hash> <subject>, ...
 
 Changed files:

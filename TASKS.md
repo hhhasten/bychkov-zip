@@ -8,18 +8,50 @@
 `AGENTS.md` розходиться, діє `AGENTS.md` (крім контракту конкретного
 завдання: контракт важливіший).
 
-## Як видати завдання агенту
+## Ролі
+
+- **Власник** — `hhhasten`. Єдина людина, яка робить рев'ю та мержить PR у
+  `main`. Може змінювати будь-що.
+- **Учасник** — усі інші. Пише код своєї задачі, пушить **тільки свою гілку**
+  `task/T-XX-...`, відкриває PR у `main`. Не пушить у `main`, не мержить PR,
+  не робить force-push у чужі гілки.
+
+## Як видати завдання агенту (для власника)
 
 1. Переконайся, що агент бачить корінь репозиторію (файли `AGENTS.md` і
-   `TASKS.md`).
+   `TASKS.md`) і що `origin/main` актуальний.
 2. Надішли промпт:
 
    > Read `AGENTS.md` and `TASKS.md` in the repository root. Complete task
-   > **T-01**. Work on a separate branch. Follow the contract literally. Finish
-   > with a report using the template from `AGENTS.md`.
+   > **T-01**. Work on a separate branch. Follow the contract literally. Push the
+   > branch and open a pull request into `main`, but do not merge it. Finish with
+   > a report using the template from `AGENTS.md`.
 
-3. Перевір звіт: гілка, список файлів, реальний вивід `cargo test`.
-4. Зроби рев'ю і змерджи в `main` сам.
+3. Учасник (або його агент) пушить свою гілку й відкриває PR у `main`.
+4. Власник перевіряє звіт, зелений CI і diff, після чого сам мержить PR.
+   Учасник PR не мержить.
+
+## Як здати роботу (для учасника)
+
+1. Переконайся, що гілка створена від актуального `origin/main`.
+2. Зроби коміти, проганяй `cargo fmt --all`, `cargo test --all-targets`,
+   `cargo clippy --all-targets -- -D warnings`.
+3. Запуши свою гілку: `git push -u origin task/T-01-lz77`.
+4. Відкрий PR у `main`, додай власника рев'юером, дочекайся зеленого
+   `CI / check`.
+5. Не натискай Merge. Це робить власник.
+6. Надішли звіт за шаблоном з `AGENTS.md` (там є рядок `Pull request: <url>`).
+
+Якщо `main` пішов уперед, онови **тільки свою** гілку:
+
+```sh
+git fetch origin
+git rebase origin/main
+git push --force-with-lease
+```
+
+Конфлікт у `core/src/lib.rs` вирішується просто: залиш обидва рядки
+`pub mod ...;` — свій і чужий.
 
 ## Загальні правила для всіх завдань
 
@@ -27,15 +59,16 @@
 - Дозволені файли: тека завдання `core/src/<module>/**` (нові файли) і
   **рівно один рядок** `pub mod <module>;` у `core/src/lib.rs`.
 - Заборонено: `Cargo.toml`, `Cargo.lock`, `format.rs`, `crypto.rs`,
-  `archiver/**`, `cli/**`, `huffman/**`, `input.rs`, `path.rs`, `error.rs`,
-  `main.rs`, `core/tests/**`, `README.md`, `docs/**`, `AGENTS.md`, `TASKS.md`,
-  `gui/**`.
+  `archiver/**`, `cli/**`, `huffman/**`, `entropy.rs`, `input.rs`, `path.rs`,
+  `error.rs`, `main.rs`, `core/tests/**`, `README.md`, `docs/**`, `AGENTS.md`,
+  `TASKS.md`, `.github/**`, `gui/**`.
 - Нові залежності не додавати. Тільки `std` і вже підключені крейти.
 - Тести — всередині модуля завдання, у `#[cfg(test)] mod tests`.
 - Усі публічні функції повертають `crate::error::Result<T>` і використовують
   `crate::error::ByzError`, якщо в контракті не сказано інакше.
 - Перед комітом: `cargo fmt --all`, `cargo test --all-targets`,
-  `cargo clippy --all-targets -- -D warnings`.
+  `cargo clippy --all-targets -- -D warnings`. Форматування в CI
+  перевіряється командою `cargo fmt --all -- --check`.
 
 ## Міні-шпаргалка з Rust
 
@@ -72,7 +105,7 @@
 
 ## Список завдань
 
-| ID | Тема | Модуль | Складність | Залежності |
+| ID | Тема | Модуль | Складність | Нові залежності |
 |----|------|--------|------------|------------|
 | T-01 | LZ77: кодер і декодер | `core/src/lz77/` | середня | немає |
 | T-02 | Пакування блоків у томи: greedy + DP | `core/src/packing/` | середня | немає |
@@ -109,7 +142,7 @@
 **Модуль:** `core/src/lz77/mod.rs` (можна розбити на кілька файлів усередині
 `core/src/lz77/`)
 **Дозволено змінювати:** `core/src/lz77/**`, `core/src/lib.rs` (+1 рядок)
-**Залежності:** немає
+**Нові залежності:** немає
 
 ### Що це і навіщо
 
@@ -144,7 +177,10 @@ LZ77 — словникове стиснення без окремого сло�
   (`usize::from(length)`).
 - У декодері перевіряй `distance` **до** індексації, інакше буде паніка.
 - Для випадкових даних у тестах використовуй `rand::rngs::StdRng` і
-  `SeedableRng::seed_from_u64`.
+  `SeedableRng::seed_from_u64`:
+  `use rand::{Rng, SeedableRng};`. У `rand` 0.10 діапазон береться як
+  `rng.random_range(0..n)`, а не `gen_range`; `thread_rng()` замінено на
+  `rand::rng()`.
 
 ### Контракт
 
@@ -216,7 +252,7 @@ pub fn decode(tokens: &[Token]) -> crate::error::Result<Vec<u8>>;
 **Гілка:** `task/T-02-packing`
 **Модуль:** `core/src/packing/mod.rs`
 **Дозволено змінювати:** `core/src/packing/**`, `core/src/lib.rs` (+1 рядок)
-**Залежності:** немає
+**Нові залежності:** немає
 
 ### Що це і навіщо
 
@@ -314,7 +350,7 @@ impl Packing {
 **Гілка:** `task/T-03-crc32`
 **Модуль:** `core/src/crc32/mod.rs`
 **Дозволено змінювати:** `core/src/crc32/**`, `core/src/lib.rs` (+1 рядок)
-**Залежності:** немає
+**Нові залежності:** немає
 
 ### Що це і навіщо
 
@@ -402,7 +438,7 @@ pub fn crc32(data: &[u8]) -> u32;
 **Гілка:** `task/T-04-mlp`
 **Модуль:** `core/src/mlp/mod.rs`
 **Дозволено змінювати:** `core/src/mlp/**`, `core/src/lib.rs` (+1 рядок)
-**Залежності:** немає (можна використовувати вже підключений `rand`)
+**Нові залежності:** немає (можна використовувати вже підключений `rand`)
 
 ### Що це і навіщо
 
@@ -489,7 +525,8 @@ pub fn macro_f1(
 - Функція втрат — cross-entropy.
 - Ініціалізація ваг детермінована за `seed`.
 - `train` — full-batch SGD, без міні-батчів.
-- `epochs == 0` — допустимий no-op.
+- `epochs == 0` — допустимий no-op: передбачення не змінюються. Аргументи
+  все одно перевіряються, тому `train(&[], 0, 0.1)` — це `BadArgs`, а не no-op.
 - Помилки (`ByzError::BadArgs`): порожній `sizes`, `sizes.len() < 2`, будь-який
   розмір `0`, кількість класів `< 2`, порожній `samples`, довжина `features`
   не збігається з входом, `label >= classes`, `learning_rate` не скінченний
@@ -499,9 +536,12 @@ pub fn macro_f1(
 - `macro_f1`:
   - довжини масивів мають збігатися, інакше `BadArgs`;
   - `classes >= 1`, інакше `BadArgs`;
+  - кожна мітка в `predicted` та `expected` має бути `< classes`, інакше
+    `BadArgs`;
   - для класу `c`: `tp`, `fp`, `fn`; `f1 = 2*tp / (2*tp + fp + fn)`,
     якщо знаменник `0`, то `f1 = 0.0`;
   - результат — середнє `f1` за всіма `classes`.
+- `features`, що містять `NaN` або нескінченність, — `BadArgs`.
 - Жодних панік на вхідних даних.
 
 ### Обов'язкові тести
@@ -534,7 +574,7 @@ pub fn macro_f1(
 **Гілка:** `task/T-05-ga`
 **Модуль:** `core/src/ga/mod.rs`
 **Дозволено змінювати:** `core/src/ga/**`, `core/src/lib.rs` (+1 рядок)
-**Залежності:** немає (можна використовувати вже підключений `rand`)
+**Нові залежності:** немає (можна використовувати вже підключений `rand`)
 
 ### Що це і навіщо
 
@@ -562,7 +602,9 @@ pub fn macro_f1(
 ### Підказки по Rust
 
 - Функція пристосованості — замикання: `F: Fn(&[u8]) -> f64`.
-- Сортування популяції: `individuals.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap())`.
+- Сортування популяції: `individuals.sort_by(|a, b| b.1.total_cmp(&a.1));`.
+  `partial_cmp(...).unwrap()` не використовуй: `fitness` може повернути `NaN`,
+  і це буде паніка. `f64::total_cmp` працює з будь-якими значеннями.
 - Для випадковості — `StdRng` із `seed`; не використовуй `thread_rng`, інакше
   тести стануть недетермінованими.
 - `Vec<u8>` для геному; перевіряй, що кожен біт `0` або `1`.
@@ -614,7 +656,8 @@ where
 - Помилки (`ByzError::BadArgs`): `genome_len == 0`, `population < 2`,
   `generations == 0`, `elitism > population`, `tournament == 0` або
   `tournament > population`, `mutation_rate`/`crossover_rate` поза `[0, 1]`
-  або не скінченні.
+  або не скінченні. `elitism == population` і ймовірності `0` — допустимі:
+  тоді покоління просто не змінюється.
 - Жодних панік на вхідних даних.
 
 ### Обов'язкові тести
@@ -622,7 +665,9 @@ where
 1. Усі варіанти некоректного `Config` → `BadArgs`.
 2. OneMax: `genome_len = 64`, population 100, generations 200,
    mutation 0.02, crossover 0.9, elitism 2, tournament 3, seed 42.
-   `best_fitness == 64.0`.
+   `best_fitness == 64.0`. Якщо конкретний seed не сходиться за 200 поколінь,
+   збільш `generations` або підбери інший seed — тест має бути стабільним,
+   а не «іноді зеленим».
 3. `history.len() == generations` і `history` не спадає.
 4. `best` складається лише з `0`/`1`, довжина `genome_len`.
 5. Детермінізм: два запуски з одним seed дають однаковий `Outcome`.
@@ -641,11 +686,13 @@ where
 
 ## Чек-лист рев'ю для власника
 
-- [ ] Гілка названа `task/T-XX-...`.
+- [ ] Гілка названа `task/T-XX-...`, PR відкритий у `main` (не смержений
+      учасником).
 - [ ] Змінено лише дозволені файли; у `lib.rs` рівно один рядок.
 - [ ] `Cargo.toml` і `Cargo.lock` не змінені.
 - [ ] Публічний API збігається з контрактом.
 - [ ] Тести справді є й перевіряють помилки, а не лише happy path.
+- [ ] `CI / check` зелений.
 - [ ] `cargo test --all-targets` зелений.
 - [ ] `cargo clippy --all-targets -- -D warnings` зелений.
 - [ ] У звіті реальні числа, а не «все працює».
