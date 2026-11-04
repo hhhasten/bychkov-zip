@@ -7,15 +7,18 @@ other projects.
 ## How to use
 
 The repository owner gives the agent two files — `AGENTS.md` and `TASKS.md` —
-plus a task ID. Ready-to-use prompt:
+plus a task ID. Ready-to-use prompt (replace `<T-XX>` with the task ID):
 
 > Read `AGENTS.md` and `TASKS.md` in the repository root. Complete task
-> **T-01**. Work on a separate branch. Follow the contract literally. Push the
+> **<T-XX>**. Work on a separate branch. Follow the contract literally. Push the
 > branch and open a pull request into `main`, but do not merge it. Finish with a
 > report using the template from `AGENTS.md`.
 
 If the agent cannot open the files or run `cargo`, it must say so immediately
 and **must not invent** test results.
+
+Sections 0–12 are for the task agent. Section 13 is for the maintainer only:
+how to hand out tasks, review and merge pull requests.
 
 ## 0. The main rule
 
@@ -265,3 +268,77 @@ dishonest "done" that fails the tests.
 - Do not disable checks for "performance".
 - If a task touches cryptography, do not invent your own scheme; the team tasks
   contain no cryptography work.
+
+## 13. Issuing tasks and merging (maintainer only)
+
+This section is for the repository owner. A task agent or a collaborator does
+not need it: their instructions are in sections 0–12 and in `TASKS.md`.
+
+### Before handing out a task
+
+1. Make sure `origin/main` is the version the collaborator will see:
+   `git fetch origin`, then `git log --oneline -1 origin/main`.
+2. Make sure `AGENTS.md` and `TASKS.md` are committed in the repository root,
+   not only present in the local working tree.
+3. Hand out **one task per person at a time**. Give the next task to the same
+   collaborator only after the previous pull request is merged; otherwise
+   `core/src/lib.rs` will conflict.
+
+### Prompt to send
+
+Replace `<T-XX>` with the task ID:
+
+> Read `AGENTS.md` and `TASKS.md` in the repository root. Complete task
+> **<T-XX>**. Work on a separate branch. Follow the contract literally. Push the
+> branch and open a pull request into `main`, but do not merge it. Finish with a
+> report using the template from `AGENTS.md`.
+
+### What the collaborator does
+
+1. Creates `task/<T-XX>-<name>` from `origin/main` and works only there.
+2. Writes the module and its tests per the contract, and adds exactly one
+   `pub mod` line to `core/src/lib.rs`.
+3. Runs `cargo fmt --all`, `cargo test --all-targets`, and
+   `cargo clippy --all-targets -- -D warnings` locally.
+4. Pushes their branch and opens a pull request into `main`.
+5. Sends the report from section 10. They never merge.
+
+### Review checklist
+
+- [ ] `CI / check` is green on the pull request.
+- [ ] Only allowed files changed: the task directory and exactly one `pub mod`
+      line in `core/src/lib.rs`; other `pub mod` lines are untouched.
+- [ ] `Cargo.toml` and `Cargo.lock` are unchanged.
+- [ ] The public API matches the contract (names, types, errors).
+- [ ] Every test from the task is present and covers error paths, not only the
+      happy path.
+- [ ] No `unwrap()` / `expect()` / panics in public functions, and no
+      `#[allow(...)]` used to silence lints.
+- [ ] The LZ77 encoder is not a full window scan (visible in the code and in
+      the runtime of the 1 MiB test), and `optimal` is not O(n^3).
+- [ ] There is no integration into the format, cryptography, or the CLI.
+- [ ] The report contains real command output, not a retelling; the failed
+      test names, if any, are explained.
+
+### Merging
+
+1. Wait for `CI / check` to pass; do not merge a red pull request.
+2. **Squash and merge** — the ruleset allows no other method.
+3. Delete the remote branch after merging.
+4. Update the local `main`: `git switch main && git pull --ff-only`, then run
+   `cargo test --all-targets`.
+5. Only then hand out the next task to the same collaborator.
+
+### If the pull request is not ready
+
+Do not fix someone else's branch yourself. Comment on the pull request with the
+failing checklist item and send it back to the collaborator. They push to the
+same branch, and the pull request updates automatically.
+
+### Why collaborators cannot merge by accident
+
+The `main` ruleset requires a pull request, requires the `CI / check` status
+check, forbids force-pushes and deletions, and restricts updates to the admin
+role. A collaborator with the Write role can push their own task branch and open
+a pull request, but cannot push to `main` or press Merge. Direct pushes to
+`main` work only because the admin bypasses the ruleset.
