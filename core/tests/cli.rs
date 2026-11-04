@@ -16,7 +16,11 @@ fn run(dir: &Path, args: &[&str], password: Option<&str>) -> Output {
 
     let mut stdin = child.stdin.take().unwrap();
     if let Some(password) = password {
-        writeln!(stdin, "{password}").unwrap();
+        // The CLI may reject the arguments and exit before it reads the
+        // password, so a broken pipe here is expected and not a test failure.
+        if let Err(err) = writeln!(stdin, "{password}") {
+            assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe, "{err}");
+        }
     }
     drop(stdin);
 
