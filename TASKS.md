@@ -576,7 +576,8 @@ pub fn macro_f1(
 
 1. Помилки конфігурації: `sizes = []`, `[3]`, `[3, 2]` (немає прихованого
    шару), `[3, 0]`, кількість класів 1.
-2. `predict` із неправильною довжиною входу → `BadArgs`.
+2. `predict` із неправильною довжиною входу → `BadArgs`; `features` з `NaN`
+   або `f32::INFINITY` → `BadArgs`.
 3. `predict_proba`: сума 1, значення в діапазоні, довжина == кількість класів.
 4. `predict` збігається з `argmax(predict_proba)`.
 5. Детермінізм: два екземпляри з одним `seed` і тими самими даними дають
@@ -702,7 +703,7 @@ where
 
 ### Обов'язкові тести
 
-1. Усі варіанти некоректного `Config` → `BadArgs`.
+1. Усі варіанти некоректного `Config` і `genome_len = 0` → `BadArgs`.
 2. OneMax: `genome_len = 64`, population 100, generations 200,
    mutation 0.02, crossover 0.9, elitism 2, tournament 3, seed 42.
    `best_fitness == 64.0`. Якщо конкретний seed не сходиться за 200 поколінь,

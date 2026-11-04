@@ -203,7 +203,8 @@ Do not continue until you get an answer.
   maintainer modules keep their Ukrainian comments — do not translate or touch
   them.
 - Public functions return `crate::error::Result<T>` and use
-  `crate::error::ByzError`.
+  `crate::error::ByzError`, unless the task contract specifies another
+  signature (for example `encode -> Vec<Token>` or `crc32 -> u32`).
 - Invalid input: `ByzError::BadArgs`. Corrupted data: `ByzError::BadFormat`.
 - No panics on untrusted input. `unwrap()` is allowed in tests.
 - Comments only where they explain "why", not "what". Do not comment every line.
