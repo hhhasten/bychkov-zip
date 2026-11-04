@@ -51,6 +51,28 @@ fn create_and_extract_round_trip() {
 }
 
 #[test]
+fn dot_archives_the_current_folder_under_its_name() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("a.txt"), b"hello").unwrap();
+
+    let created = run(dir.path(), &["create", "out.byz", "."], Some("secret"));
+    assert!(created.status.success(), "{created:?}");
+
+    let extracted = run(
+        dir.path(),
+        &["extract", "out.byz", "-o", "unpacked"],
+        Some("secret"),
+    );
+    assert!(extracted.status.success(), "{extracted:?}");
+
+    let folder = dir.path().file_name().unwrap().to_str().unwrap();
+    assert_eq!(
+        fs::read(dir.path().join("unpacked").join(folder).join("a.txt")).unwrap(),
+        b"hello"
+    );
+}
+
+#[test]
 fn folder_contents_are_archived() {
     let dir = TempDir::new().unwrap();
     fs::create_dir_all(dir.path().join("docs/sub")).unwrap();

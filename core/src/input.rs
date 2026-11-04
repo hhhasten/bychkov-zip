@@ -55,8 +55,8 @@ impl Collector {
         }
 
         if meta.is_dir() {
-            let prefix = file_name(path)?;
-            self.walk_dir(path, prefix)
+            let prefix = dir_name(path)?;
+            self.walk_dir(path, &prefix)
         } else if meta.is_file() {
             self.push(path.to_path_buf(), file_name(path)?.to_owned(), meta.len())
         } else {
@@ -175,6 +175,26 @@ fn file_name(path: &Path) -> Result<&str> {
         })
 }
 
+/// Archive prefix for a directory input.
+/// `.` and `..` have no file name of their own, so use the real folder name.
+fn dir_name(path: &Path) -> Result<String> {
+    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        return Ok(name.to_owned());
+    }
+
+    fs::canonicalize(path)
+        .map_err(|e| io_error_with_path(e, path))?
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ByzError::BadArgs(format!(
+                "cannot derive a folder name for {}",
+                path.display()
+            ))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +224,15 @@ mod tests {
 
         let sizes: Vec<_> = inputs.iter().map(|i| i.size).collect();
         assert_eq!(sizes, [5, 4, 3]);
+    }
+
+    #[test]
+    fn dot_and_dotdot_get_the_real_folder_name() {
+        let cwd = std::env::current_dir().unwrap();
+        let expected = cwd.file_name().unwrap().to_str().unwrap();
+
+        assert_eq!(dir_name(Path::new(".")).unwrap(), expected);
+        assert!(!dir_name(Path::new("..")).unwrap().is_empty());
     }
 
     #[test]
