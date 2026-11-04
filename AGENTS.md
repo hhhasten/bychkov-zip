@@ -100,9 +100,10 @@ A task agent **must not**:
    plain `--force` and never force-push `main`.
 9. Commit `target/`, `*.byz`, passwords, keys, temporary files, or any material
    belonging to the course instructor.
-10. Use `unsafe` unless the task explicitly requires it.
+10. Use `unsafe` — the crate root denies it with `#![forbid(unsafe_code)]`.
 11. Add `println!`, `dbg!`, or `eprintln!` to library code.
-12. Run commands that delete or overwrite data outside the repository.
+12. Silence lints with `#[allow(...)]` instead of fixing the code.
+13. Run commands that delete or overwrite data outside the repository.
 
 If a task genuinely requires a new dependency or a forbidden file, **stop and
 explain what is needed and why**. Do not do it yourself.
@@ -196,7 +197,11 @@ Do not continue until you get an answer.
 ## 9. Code style
 
 - Rust 2024, `std` only (plus crates already in `Cargo.toml`).
-- Identifiers in English, comments in English, error messages in English.
+- The crate root has `#![forbid(unsafe_code)]`: any `unsafe` block will not
+  compile. Do not try to remove or override that attribute.
+- Identifiers, comments and error messages in new code: English. Existing
+  maintainer modules keep their Ukrainian comments — do not translate or touch
+  them.
 - Public functions return `crate::error::Result<T>` and use
   `crate::error::ByzError`.
 - Invalid input: `ByzError::BadArgs`. Corrupted data: `ByzError::BadFormat`.
