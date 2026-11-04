@@ -217,6 +217,46 @@ Do not continue until you get an answer.
   random ordering, no dependence on the current directory.
 - Test data should be small (a few megabytes at most).
 
+### 9.1 Known pitfalls and clarifications
+
+These points are part of the task contract. If the wording in `TASKS.md`
+disagrees with this section, follow this section and mention the discrepancy in
+your report.
+
+- **`rand` 0.10 API.** In `rand` 0.10 the range methods live on
+  `rand::RngExt`, not on `rand::Rng`. The `use rand::{Rng, SeedableRng};`
+  snippet in `TASKS.md` (T-01, "Підказки по Rust") is outdated: it imports
+  the trait, but `rng.random_range(0..n)` then fails with
+  `E0599: no method named random_range`. Use:
+
+  ```rust
+  use rand::{RngExt, SeedableRng};
+
+  let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+  let n = rng.random_range(0..10);
+  ```
+
+  `rand::rng()` without arguments replaces `thread_rng()`.
+
+- **T-01, window boundary.** The required test with 32 768 random bytes
+  followed by a repeat of the first 300 bytes expects a `Match` with
+  `distance == WINDOW`. Do not limit the hash-chain search so aggressively
+  that this match is skipped. The encoder must actually find a match at the
+  window boundary, not merely avoid distances above `WINDOW`.
+
+- **T-02, overflow.** Check `u64` overflow when adding sizes **inside one
+  volume**. Do not sum all block sizes together: a large total must not turn
+  a valid packing into `BadArgs`. A single block larger than `capacity` is
+  still `BadArgs`.
+
+- **T-05, `NaN` fitness.** The tests use finite fitness values. Behaviour on
+  `NaN` is not specified; do not add a panic for it. Sort with
+  `f64::total_cmp` as the task says.
+
+- **Reading order.** `TASKS.md` says only three things must be read. That is
+  not enough: sections 8 (when to stop) and 10 (report) of this file are
+  mandatory. The report is part of the deliverable.
+
 ## 10. Report
 
 Finish with exactly this report:
